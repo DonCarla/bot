@@ -120,7 +120,9 @@ async def check_tennis_matches():
             except Exception as e:
                 print("Ошибка:", e)
                 await asyncio.sleep(5)
-
+async def handle(request):
+    return web.Response(text="✅ Tennis bot is running")
+    
 async def main():
     # Запускаем бота фоном
     asyncio.create_task(check_tennis_matches())
