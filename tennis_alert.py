@@ -104,6 +104,16 @@ async def check_tennis_matches():
                     events = data.get("events", [])
                     print(f"[{time.strftime('%H:%M:%S')}] Матчей: {len(events)}")
                     for match in events:
+                            home = match.get("homeTeam", {}).get("name", "Home")
+                            away = match.get("awayTeam", {}).get("name", "Away")
+                            category = match.get("tournament", {}).get("category", {}).get("name", "")
+                            sets = extract_sets_from_match(match)
+                            server = get_server(match)
+
+                            print(f"\n🎾 Матч: {home} vs {away}  | {category}")
+                            for s in sets:
+                                print(f"  Сет {s['number']}: {s['home']}–{s['away']}")
+                                print(f"  Подаёт: {server}\n")
                         await process_match(session, match)
             except Exception as e:
                 print("Ошибка:", e)
