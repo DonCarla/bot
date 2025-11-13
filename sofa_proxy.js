@@ -14,7 +14,7 @@ app.get("/live", async (req, res) => {
     const response = await fetch(SOFA_URL, {
       headers: {
         "X-RapidAPI-Key": "491de2f94emsh815cefbc25b4a41p12296ejsn679d321c7031",
-        "X-RapidAPI-Host": "rapidapi.com",
+        "X-RapidAPI-Host": "sofascore.p.rapidapi.com",
       },
     });
 
