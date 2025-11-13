@@ -126,6 +126,7 @@ async def process_match(session, match: dict):
 
 async def check_tennis_matches():
     async with aiohttp.ClientSession() as session:
+        await send_telegram_message(session, "Telega fine")
         while True:
             try:
                 print(f"Проверяю обновления... {time.strftime('%H:%M:%S')}")
