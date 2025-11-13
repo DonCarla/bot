@@ -9,7 +9,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = "7943174014:AAHWqDtjnSgBY2Me8QxgYOolO1fT6L62eAk"  # ← вставь свой токен сюда
 TELEGRAM_CHAT_ID = 5892506142
-LOCAL_API = os.getenv("LOCAL_API", "http://localhost:3000/live")
+LOCAL_API = "https://node-rvue.onrender.com/live"
 CHECK_INTERVAL = float(os.getenv("CHECK_INTERVAL", "5"))
 ALLOWED_TOURNAMENTS = ("ATP", "WTA", "Challenger")  # для 2-0/0-2
 
