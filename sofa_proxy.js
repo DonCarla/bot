@@ -7,14 +7,14 @@ const fetch = (...args) =>
 const app = express();
 app.use(cors());
 
-const SOFA_URL = "https://sofascore.p.rapidapi.com/sport/tennis/events/live";
+const SOFA_URL = "https://sportapi7.p.rapidapi.com/api/v1/sport/tennis/events/live";
 
 app.get("/live", async (req, res) => {
   try {
     const response = await fetch(SOFA_URL, {
       headers: {
         "X-RapidAPI-Key": "491de2f94emsh815cefbc25b4a41p12296ejsn679d321c7031",
-        "X-RapidAPI-Host": "sofascore.p.rapidapi.com",
+        "X-RapidAPI-Host": "sportapi7.p.rapidapi.com",
       },
     });
 
