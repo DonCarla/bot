@@ -1,8 +1,9 @@
-# tennis_alert.py
+# tennis_alert.py — для бесплатного Render (бот + встроенный веб-сервер)
 import aiohttp
 import asyncio
 import os
 import time
+from aiohttp import web
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,157 +12,125 @@ TELEGRAM_TOKEN = "7943174014:AAHWqDtjnSgBY2Me8QxgYOolO1fT6L62eAk"  # ← вст�
 TELEGRAM_CHAT_ID = 5892506142
 LOCAL_API = "https://node-rvue.onrender.com/live"
 CHECK_INTERVAL = float(os.getenv("CHECK_INTERVAL", "5"))
-ALLOWED_TOURNAMENTS = ("ATP", "WTA", "Challenger")  # для 2-0/0-2
-
 sent_alerts = set()
 
-async def send_telegram_message(session, text: str):
+# ----------------- Telegram -----------------
+async def send_telegram_message(session, text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❗ Telegram не настроен. Сообщение:", text)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        async with session.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text}) as r:
-            if r.status != 200:
-                txt = await r.text()
-                print("Ошибка отправки Telegram:", r.status, txt)
-    except Exception as e:
-        print("Ошибка при отправке Telegram:", e)
+        await session.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+    except:
+        pass
 
+# ----------------- Парсинг сетов -----------------
 def extract_sets_from_match(match: dict):
-    """
-    Возвращает список сетов в виде [{'number':1, 'home':x, 'away':y}, ...]
-    Поддерживает разные форматы Sofascore:
-      - match.get("periodScores", [])  (массив объектов)
-      - поля match["homeScore"]["period1"], period2 ... и аналогично awayScore
-    """
     sets = []
-
-    # 1) Если есть periodScores — используем их
-    ps = match.get("periodScores")
-    if ps and isinstance(ps, list) and len(ps) > 0:
-        for s in ps:
-            num = s.get("number") if s.get("number") is not None else s.get("set") or len(sets)+1
-            home = s.get("home", 0) or 0
-            away = s.get("away", 0) or 0
-            sets.append({"number": num, "home": int(home), "away": int(away)})
-        return sets
-
-    # 2) Если нет periodScores, но есть homeScore / awayScore с period1..period5
     hs = match.get("homeScore", {})
     ascore = match.get("awayScore", {})
-    # period keys pattern: 'period1', 'period2', ...
-    # попробуем собрать по periodN, где N от 1 до 5 (Sofascore обычно до 5)
+
     for i in range(1, 6):
         hk = f"period{i}"
         if hk in hs or hk in ascore:
-            home_val = hs.get(hk, 0) or 0
-            away_val = ascore.get(hk, 0) or 0
-            # if both zeros and no data — still include? сюда добавим если хотя бы один > 0
-            if (home_val != 0) or (away_val != 0):
-                sets.append({"number": i, "home": int(home_val), "away": int(away_val)})
-    # 3) как fallback: некоторый провайдер может хранить в fields "periodsScores" или "periods"
-    if not sets:
-        periods = match.get("periods")  # иногда periods содержит описание, но не счёт
-        # нет явных данных — вернём пустой список
+            h = int(hs.get(hk, 0) or 0)
+            a = int(ascore.get(hk, 0) or 0)
+            if h or a:
+                sets.append({"number": i, "home": h, "away": a})
     return sets
 
-async def process_match(session, match: dict):
-    tournament = match.get("tournament", {})
-    category = tournament.get("category", {}).get("name", "") or ""
-    tournament_name = tournament.get("name", "<unknown tournament>")
+def get_server(match):
+    flag = match.get("firstToServe")
+    if flag == 1:
+        return "home"
+    elif flag == 2:
+        return "away"
+    return None
 
+# ----------------- Основная логика -----------------
+async def process_match(session, match):
+    tournament = match.get("tournament", {})
+    category = tournament.get("category", {}).get("name", "")
+    tournament_name = tournament.get("name", "<unknown>")
     home = match.get("homeTeam", {}).get("name", "Home")
     away = match.get("awayTeam", {}).get("name", "Away")
-    mid = match.get("id") or match.get("slug") or f"m_{hash(home+away)}"
+    mid = match.get("id")
 
     sets = extract_sets_from_match(match)
+    server = get_server(match)
 
-    # debug: печатаем все сеты, которые нашли
-    if sets:
-        for s in sets:
-            print(f"{home} vs {away} | Сет {s['number']} | {s['home']}-{s['away']} | Турнир: {category} / {tournament_name}")
-    else:
-        # если нет сетов, можно вывести текущие очки/point
-        hcur = match.get("homeScore", {}).get("current") or match.get("homeScore", {}).get("display")
-        acur = match.get("awayScore", {}).get("current") or match.get("awayScore", {}).get("display")
-        print(f"{home} vs {away} | Нет сетовых данных. Текущий матч: {hcur}-{acur} | Турнир: {category} / {tournament_name}")
-
-    # Проходим по каждому сету и детектим события
     for s in sets:
-        set_num = s["number"]
-        hg = s["home"]
-        ag = s["away"]
+        hg, ag, set_num = s["home"], s["away"], s["number"]
 
-        # 6-5 или 5-6 — для всех турниров (включая ITF)
+        # ---------- Сценарий №1: 6–5 / 5–6 (тай-брейк возможен) ----------
         if {hg, ag} == {6, 5}:
-            key = f"{mid}_set{set_num}_6-5"
-            if key not in sent_alerts:
-                text = (
-                    f"🎾 {home} vs {away}\n"
-                    f"⚠️ Счёт {hg}–{ag} в сете {set_num}!\n"
-                    f"🏆 {tournament_name} ({category})\n"
-                    f"👉 Возможен тай-брейк!"
-                )
-                await send_telegram_message(session, text)
-                sent_alerts.add(key)
-                print(f"[{time.strftime('%H:%M:%S')}] Отправлено: {text}")
+            leader = "home" if hg > ag else "away"
+            losing = "away" if leader == "home" else "home"
 
-        # 2-0 или 0-2 — ТОЛЬКО для разрешённых турниров
-        if {hg, ag} == {2, 0}:
-            if any(cat in category for cat in ALLOWED_TOURNAMENTS):
-                key = f"{mid}_set{set_num}_2-0"
+            # уведомляем только если подаёт проигрывающий
+            if server == losing:
+                key = f"{mid}_set{set_num}_65"
                 if key not in sent_alerts:
                     text = (
                         f"🎾 {home} vs {away}\n"
-                        f"🔥 Быстрый старт в сете {set_num}: {hg}–{ag}!\n"
+                        f"⚠️ {hg}–{ag} в сете {set_num} — подаёт проигрывающий!\n"
+                        f"🏆 {tournament_name} ({category})\n"
+                        f"👉 Возможен тай-брейк!"
+                    )
+                    await send_telegram_message(session, text)
+                    sent_alerts.add(key)
+
+        # ---------- Сценарий №2: 2–0 / 0–2 (только ATP + Challenger) ----------
+        if {hg, ag} == {2, 0}:
+            if category in ("ATP", "Challenger"):
+                key = f"{mid}_set{set_num}_20"
+                if key not in sent_alerts:
+                    text = (
+                        f"🔥 {home} vs {away}\n"
+                        f"Начало сета {set_num}: {hg}–{ag}\n"
                         f"🏆 {tournament_name} ({category})"
                     )
                     await send_telegram_message(session, text)
                     sent_alerts.add(key)
-                    print(f"[{time.strftime('%H:%M:%S')}] Отправлено: {text}")
-            else:
-                # для отладки можно вывести, что ITF/неразрешённый турнир, 2-0 игнорируется
-                print(f"[INFO] Пропущено (2-0 в неподходящем турнире): {tournament_name} ({category})")
 
+# ----------------- Фоновая задача (бот) -----------------
 async def check_tennis_matches():
     async with aiohttp.ClientSession() as session:
-        await send_telegram_message(session, "Telega fine")
+        await send_telegram_message(session, "tele check")
         while True:
             try:
-                print(f"Проверяю обновления... {time.strftime('%H:%M:%S')}")
                 async with session.get(LOCAL_API) as resp:
-                    if resp.status != 200:
-                        print("Ошибка proxy:", resp.status)
-                        await asyncio.sleep(CHECK_INTERVAL)
-                        continue
-
                     data = await resp.json()
                     events = data.get("events", [])
-                    print("Количество матчей:", len(events))
-
-                    # --- Отладка: можно временно добавить тестовый матч (раскомментировать при необходимости) ---
-                    # fake_event = {
-                    #     "id": 999999,
-                    #     "homeTeam": {"name": "Test A"},
-                    #     "awayTeam": {"name": "Test B"},
-                    #     "tournament": {"name": "ATP Test", "category": {"name": "ATP"}},
-                    #     "homeScore": {"period1": 6, "period2": 0},
-                    #     "awayScore": {"period1": 5, "period2": 0}
-                    # }
-                    # events.append(fake_event)
-
+                    print(f"[{time.strftime('%H:%M:%S')}] Матчей: {len(events)}")
                     for match in events:
                         await process_match(session, match)
-
-                await asyncio.sleep(CHECK_INTERVAL)
-
             except Exception as e:
-                print("Ошибка в основном цикле:", e)
-                await asyncio.sleep(5)
+                print("Ошибка:", e)
+
+            await asyncio.sleep(CHECK_INTERVAL)
+
+# ----------------- Веб-сервер для Render FREE -----------------
+async def handle(request):
+    return web.Response(text="✅ Tennis bot is running")
+
+async def main():
+    # Запускаем бота фоном
+    asyncio.create_task(check_tennis_matches())
+
+    # Запускаем простой веб-сервер
+    app = web.Application()
+    app.router.add_get("/", handle)
+
+    port = int(os.environ.get("PORT", 3000))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+    print(f"🌐 Web server running on port {port}")
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(check_tennis_matches())
-    except KeyboardInterrupt:
-        print("Остановка.")
+    asyncio.run(main())
